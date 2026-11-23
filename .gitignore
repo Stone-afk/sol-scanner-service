@@ -32,6 +32,9 @@ go.work.sum
 # Local configuration with secrets (never commit)
 /config/config.local.yaml
 
+# Spec / design docs stay local (not published with the repo)
+/docs/
+
 # Editor/IDE
 .idea/
 .vscode/

@@ -2,7 +2,7 @@
 
 只读 Solana **finalized** 扫链服务：同一仓库两个进程——扫块投递区块队列，处理侧解析、一块一事务落库，再按发布游标发下游交易（至少一次，key=签名）。
 
-不做回滚 topic、不回补 `startSlot` 之前的历史、不判断充值/提现业务语义。产品与数据契约以 [`docs/superpowers/001-sol-scanner-v1/design.md`](docs/superpowers/001-sol-scanner-v1/design.md) 为准；规格三件套见同目录 `spec.md` / `plan.md` / `tasks.md`（当前基线 `PLAN-v1.6.5`）。
+不做回滚 topic、不回补 `startSlot` 之前的历史、不判断充值/提现业务语义。产品与数据契约、规格三件套在本地 `docs/superpowers/001-sol-scanner-v1/`（不随仓库公开；当前基线 `PLAN-v1.6.5`）。
 
 > 总体验收（PLAN-028）已通过；当前 Infura 环境下 A-04 吞吐门禁为 **blocked**，**不声称已上线或可生产运行**。高吞吐 RPC 下才可将 FA-04 标为 passed。
 
@@ -106,7 +106,6 @@ internal/
   ioc/ (+ scanner|processor)# 装配 InitX
   config/ domain/ pkg/
 scripts/postgre/            # 迁移 SQL 权威
-docs/superpowers/001-sol-scanner-v1/
 ```
 
 依赖方向：`cmd → ioc → {scanner|processor|event|repository|…} → domain`。处理进程不得依赖 `provider` / `chain-api-go`。
@@ -144,4 +143,4 @@ make e2e               # 专用 Compose PostgreSQL + Kafka，退出清理
 | 配置 | `yaml.v3`，KnownFields + `${VAR}` 展开 |
 | Kafka | `confluent-kafka-go`（CGO） |
 
-更细的表结构、消息 JSON、停扫原因与验收口径见 `design.md` 与规格三件套。
+更细的表结构、消息 JSON、停扫原因与验收口径见本地规格文档（`docs/`，已 gitignore）。
