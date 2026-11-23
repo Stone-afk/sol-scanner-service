@@ -1,0 +1,16 @@
+chain:
+  name: solana-mainnet
+  genesisHash: 5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d
+  startSlot: 471991643        # 没有投递游标时必填，0 视为未填
+rpc:
+  httpURL: https://solana-mainnet.infura.io/v3/${INFURA_API_KEY}
+scanner:
+  pollInterval: 500ms         # 追平后多久再看一次最新 slot
+  stepSlots: 20000            # 一步扫多少个 slot
+  slotsPerWorker: 500         # 一个协程负责多少个 slot；协程数 = stepSlots / slotsPerWorker
+database:
+  dsn: ${POSTGRES_DSN}
+kafka:
+  brokers: ["127.0.0.1:9092"]
+  blockTopic: sol-scanner.blocks          # 扫块 → 处理
+  transactionTopic: sol-scanner.transactions  # 处理 → 下游
