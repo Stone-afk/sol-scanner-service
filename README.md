@@ -12,38 +12,47 @@
 flowchart TB
     RPC["Solana RPC<br/>HTTP · commitment=finalized"]
     subgraph SCAN["cmd/sol-scanner"]
-        PROV["provider<br/>chain-api-go"]
-        LOOP["扫块循环<br/>FinalizedSlot → 分段 getBlocks/getBlock"]
+        PROV["provider · chain-api-go"]
+        STEP["主循环：FinalizedSlot()<br/>划一步 → 切成 n 段"]
+        subgraph WORKERS["并行扫块协程 · n = stepSlots / slotsPerWorker"]
+            W1["协程-1<br/>getBlocks → getBlock / skipped"]
+            W2["协程-2"]
+            WN["协程-n"]
+        end
+        JOIN["整步回执齐全后<br/>才推进投递游标"]
     end
     Q["Kafka 区块 topic<br/>key = slot · kind=block|skipped"]
     subgraph PROC["cmd/sol-processor"]
-        WR["写协程<br/>按 slot 重排 · 连续性 · 一块一事务"]
-        PARSE["parser<br/>纯函数"]
+        WR["单写协程<br/>按 slot 重排 · 连续性 · 一块一事务"]
+        PARSE["parser · 纯函数"]
         PUB["发布循环<br/>按发布游标读库"]
     end
     DB[("PostgreSQL")]
     TX["Kafka 下游交易 topic<br/>key = 签名"]
     DOWN["下游业务"]
 
-    RPC --> PROV --> LOOP --> Q
+    RPC --> PROV --> STEP
+    STEP --> W1 & W2 & WN
+    W1 & W2 & WN --> RPC
+    W1 & W2 & WN --> JOIN --> Q
     Q --> WR
     WR --> PARSE
     WR --> DB
     DB --> PUB --> TX --> DOWN
 ```
 
-| 进程 | 做什么 | 不做什么 |
-| --- | --- | --- |
-| `sol-scanner` | HTTP 拉 finalized；按 `stepSlots` / `slotsPerWorker` 分段投递 | 不解析、不写业务表、不发下游交易 |
-| `sol-processor` | 消费区块队列、解析、落库、按游标发下游 | 不访问 RPC |
+| 进程 | 并发 | 做什么 | 不做什么 |
+| --- | --- | --- | --- |
+| `sol-scanner` | **多协程**：每步按 `slotsPerWorker` 扇出；示例 `stepSlots=20000` / `500` → 40 协程 | HTTP 拉 finalized 并投递 | 不解析、不写业务表、不发下游 |
+| `sol-processor` | **单写协程**落库；发布循环另跑 | 消费、解析、落库、按游标发下游 | 不访问 RPC |
 
-区块 topic 是内部队列；交易 topic 才给下游。下游不通时仍可落库，发布循环从游标补发；区块队列不通时扫块不推进投递游标。
+并行只在扫块侧。整步任一片段失败则游标不前进。区块 topic 是内部队列；交易 topic 给下游。
 
 ## 数据流
 
 ### 扫块一步
 
-先 `FinalizedSlot()`，再划本步左右端并切段；整步成功才推进投递游标。
+先 `FinalizedSlot()`，再划本步并 **扇出多协程**；整步成功才推进投递游标。
 
 ```mermaid
 flowchart TD
@@ -51,11 +60,14 @@ flowchart TD
     H -- 是 --> Z["等待，不开下一步"] --> H
     H -- 否 --> B["FinalizedSlot()"]
     B --> C{"游标之后还有 slot?"}
-    C -- 否 --> W["等待 pollInterval"] --> B
-    C -- 是 --> D["划一步并按 slotsPerWorker 切段"]
-    D --> F["各协程: getBlocks → getBlock / skipped"]
-    F --> G{"整步回执齐全?"}
-    G -- 否 --> R["重投，游标不动"] --> F
+    C -- 否 --> Wait["等待 pollInterval"] --> B
+    C -- 是 --> D["划一步左右端"]
+    D --> E["切成 n 段<br/>n = ceil(步长 / slotsPerWorker)"]
+    E --> F1["协程-1: getBlocks/getBlock"]
+    E --> F2["协程-2: …"]
+    E --> Fn["协程-n: …"]
+    F1 & F2 & Fn --> G{"整步回执齐全?"}
+    G -- 否 --> R["各段重投，游标不动"] --> F1
     G -- 是 --> U["投递游标推进到右端"] --> B
 ```
 
