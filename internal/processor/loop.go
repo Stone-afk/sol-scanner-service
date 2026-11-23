@@ -14,10 +14,21 @@ import (
 	"github.com/Stone-afk/sol-scanner-service/internal/pkg/ctxwait"
 	"github.com/Stone-afk/sol-scanner-service/internal/processor/parser"
 	"github.com/Stone-afk/sol-scanner-service/internal/repository"
+	"github.com/ecodeclub/ekit/pool"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 const gapMissLimit = 10
+
+// shortcut: max 256 msgs per drain round (memory bound), raise if backlog regularly exceeds one round before apply catches up.
+const maxDrainPerRound = 256
+
+// defaultParseWorkers covers Config built without config.LoadForProcessor (tests).
+const defaultParseWorkers = 4
+
+// parseSlotHook, when set by tests, runs at the start of a block parse task (before decode).
+// Production leaves it nil. Enables forcing out-of-order parse completion in AC-T01/AC-T02 tests.
+var parseSlotHook func(slot uint64)
 
 // BlockConsumer is the block-queue consumer surface used by the apply loop.
 // *block.Consumer satisfies this interface.
@@ -32,11 +43,31 @@ type Config struct {
 	Chain        string
 	StartSlot    uint64
 	PollInterval time.Duration
+	ParseWorkers int // ekit/pool MaxGo / initGo for decode+ParseBlock
 }
 
-type bufferedMsg struct {
-	msg block.BlockMessage
-	off block.Offset
+// applyState is the single writer's position: the next slot to apply, the last
+// durable checkpoint, and the queue offset a halt rewinds to.
+type applyState struct {
+	slot      uint64
+	cp        domain.Checkpoint
+	hasCP     bool
+	resume    block.Offset
+	hasResume bool
+}
+
+// pendingMsg is one buffered queue message; parse is nil for skipped slots.
+type pendingMsg struct {
+	msg   block.BlockMessage
+	off   block.Offset
+	parse *parseResult
+}
+
+// parseResult is the async decode+ParseBlock outcome; read only after done closes.
+type parseResult struct {
+	done  chan struct{}
+	batch domain.BlockBatch
+	err   error
 }
 
 // Processor runs the single-goroutine FR-12 apply loop.
@@ -88,125 +119,251 @@ func (p *Processor) Apply(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if halted {
-			if waitErr := p.wait(ctx, p.cfg.PollInterval); waitErr != nil {
-				return waitErr
-			}
-			continue
+		if !halted {
+			break
 		}
-		break
+		if err := p.wait(ctx, p.cfg.PollInterval); err != nil {
+			return err
+		}
 	}
-	return p.applyLoop(ctx)
+	if err := p.applyLoop(ctx); !errors.Is(err, errHalted) {
+		return err
+	}
+	return nil
 }
 
 func (p *Processor) applyLoop(ctx context.Context) error {
-	cp, hasCP, err := p.repo.GetCheckpoint(ctx)
+	st, err := p.loadState(ctx)
 	if err != nil {
 		return err
 	}
-
-	var applySlot uint64
-	if hasCP {
-		applySlot = cp.Slot + 1
-	} else {
-		applySlot = p.cfg.StartSlot
+	parsePool, err := startParsePool(p.cfg.ParseWorkers)
+	if err != nil {
+		return err
 	}
+	defer shutdownParsePool(parsePool)
 
-	var (
-		resumeOffset block.Offset
-		hasResume    bool
-		misses       int
-		buf          = make(map[uint64]bufferedMsg)
-	)
-
+	pending := make(map[uint64]pendingMsg)
+	misses := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		pollCtx, cancel := context.WithTimeout(ctx, p.pollTimeout())
-		msg, off, pollErr := p.consumer.Poll(pollCtx)
-		cancel()
-		gotMsg := false
-		if pollErr != nil {
-			if errors.Is(pollErr, block.ErrQueueNotReady) {
-				// Topic auto-create race: wait, do not count toward GAP_UNRESOLVED.
-				if waitErr := p.wait(ctx, p.cfg.PollInterval); waitErr != nil {
-					return waitErr
-				}
-				continue
+		polled, err := p.drain(ctx)
+		if errors.Is(err, block.ErrQueueNotReady) {
+			// Topic auto-create race: wait, do not count toward GAP_UNRESOLVED.
+			if err := p.wait(ctx, p.cfg.PollInterval); err != nil {
+				return err
 			}
-			if !isEmptyPoll(pollErr) {
-				if errors.Is(pollErr, context.Canceled) || errors.Is(pollErr, context.DeadlineExceeded) {
-					if ctx.Err() != nil {
-						return ctx.Err()
-					}
-					// Timed-out poll with parent ctx still alive: empty round.
-				} else {
-					return pollErr
-				}
-			}
-		} else {
-			gotMsg = true
-			if msg.Slot < applySlot {
-				// Duplicate / already-covered: discard and Commit so the queue advances.
-				p.logger.Debug("discard covered block message", "slot", msg.Slot, "apply_slot", applySlot)
-				if err := p.consumer.Commit(ctx, off); err != nil {
-					return err
-				}
-			} else if _, exists := buf[msg.Slot]; !exists {
-				buf[msg.Slot] = bufferedMsg{msg: msg, off: off}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, item := range polled {
+			if err := p.enqueue(ctx, parsePool, pending, st.slot, item); err != nil {
+				return err
 			}
 		}
 
-		applied := false
-		for {
-			entry, ok := buf[applySlot]
-			if !ok {
-				break
-			}
-			delete(buf, applySlot)
-
-			nextSlot, nextResume, resumeOK, applyErr := p.applyOne(ctx, entry, applySlot, cp, hasCP, resumeOffset, hasResume)
-			if applyErr != nil {
-				if errors.Is(applyErr, errHalted) {
-					return nil
-				}
-				return applyErr
-			}
-			applySlot = nextSlot
-			resumeOffset = nextResume
-			hasResume = resumeOK
-			cp2, has2, cpErr := p.repo.GetCheckpoint(ctx)
-			if cpErr != nil {
-				return cpErr
-			}
-			cp, hasCP = cp2, has2
-			applied = true
+		next, err := p.applyReady(ctx, st, pending)
+		if err != nil {
+			return err
 		}
-
-		if applied {
-			misses = 0
+		if next.slot != st.slot {
+			st, misses = next, 0
 			continue
 		}
 		// Out-of-order / covered traffic is progress on the queue — not a gap miss.
-		if gotMsg {
+		if len(polled) > 0 {
 			continue
 		}
-
 		misses++
 		if misses >= gapMissLimit {
-			if err := p.halt(ctx, domain.HaltReasonGapUnresolved, applySlot, "apply slot missing for 10 polls", resumeOffset, hasResume, cp, hasCP); err != nil {
-				if errors.Is(err, errHalted) {
-					return nil
-				}
-				return err
+			return p.halt(ctx, st, domain.HaltReasonGapUnresolved, "apply slot missing for 10 polls")
+		}
+		if err := p.wait(ctx, p.cfg.PollInterval); err != nil {
+			return err
+		}
+	}
+}
+
+func (p *Processor) loadState(ctx context.Context) (applyState, error) {
+	cp, hasCP, err := p.repo.GetCheckpoint(ctx)
+	if err != nil {
+		return applyState{}, err
+	}
+	if !hasCP {
+		return applyState{slot: p.cfg.StartSlot}, nil
+	}
+	return applyState{slot: cp.Slot + 1, cp: cp, hasCP: true}, nil
+}
+
+// drain polls one batch. An empty poll is not an error, and messages pulled
+// before a not-ready error are kept; ErrQueueNotReady only surfaces when nothing arrived.
+func (p *Processor) drain(ctx context.Context) ([]block.Polled, error) {
+	polled, err := block.Drain(ctx, p.consumer, maxDrainPerRound, p.pollTimeout())
+	switch {
+	case err == nil:
+		return polled, nil
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return polled, nil
+	case errors.Is(err, block.ErrQueueNotReady) && len(polled) > 0:
+		return polled, nil
+	default:
+		return nil, err
+	}
+}
+
+// enqueue buffers one polled message and starts its parse. Already-applied slots
+// are committed and dropped so the queue advances; repeats of a buffered slot are ignored.
+func (p *Processor) enqueue(
+	ctx context.Context,
+	parsePool *pool.OnDemandBlockTaskPool,
+	pending map[uint64]pendingMsg,
+	applySlot uint64,
+	item block.Polled,
+) error {
+	msg := item.Msg
+	if msg.Slot < applySlot {
+		p.logger.Debug("discard covered block message", "slot", msg.Slot, "apply_slot", applySlot)
+		return p.consumer.Commit(ctx, item.Off)
+	}
+	if _, dup := pending[msg.Slot]; dup {
+		return nil
+	}
+	m := pendingMsg{msg: msg, off: item.Off}
+	if msg.Kind == block.KindBlock {
+		r, err := submitParse(ctx, parsePool, msg)
+		if err != nil {
+			return err
+		}
+		m.parse = r
+	}
+	pending[msg.Slot] = m
+	return nil
+}
+
+// applyReady applies buffered slots in slot order from st.slot until the first gap.
+func (p *Processor) applyReady(ctx context.Context, st applyState, pending map[uint64]pendingMsg) (applyState, error) {
+	for {
+		m, ok := pending[st.slot]
+		if !ok {
+			return st, nil
+		}
+		if m.parse != nil {
+			select {
+			case <-m.parse.done:
+			case <-ctx.Done():
+				return st, ctx.Err()
 			}
-			return nil
 		}
-		if waitErr := p.wait(ctx, p.cfg.PollInterval); waitErr != nil {
-			return waitErr
+		delete(pending, st.slot)
+		next, err := p.applyOne(ctx, st, m)
+		if err != nil {
+			return st, err
 		}
+		st = next
+	}
+}
+
+func (p *Processor) applyOne(ctx context.Context, st applyState, m pendingMsg) (applyState, error) {
+	switch m.msg.Kind {
+	case block.KindSkipped:
+		if err := p.consumer.Commit(ctx, m.off); err != nil {
+			return st, err
+		}
+		// Halt rewinds apply to checkpoint+1 (or startSlot). Queue must land on that
+		// same slot. resume is the last message that stays committed after rewind
+		// (Seek+Commit → next read = rewinded apply). A real block sets that directly.
+		// Skipped-only progress after a DB checkpoint has no in-session block offset, so
+		// the predecessor of this first skipped message is the durable resume point.
+		// Later skips after a known resume leave resume unchanged (they are undone).
+		if !st.hasResume {
+			st.resume = block.Offset{Topic: m.off.Topic, Partition: m.off.Partition, Offset: m.off.Offset - 1}
+			st.hasResume = true
+		}
+		st.slot++
+		return st, nil
+
+	case block.KindBlock:
+		if m.parse.err != nil {
+			return st, p.halt(ctx, st, domain.HaltReasonDecodeError, m.parse.err.Error())
+		}
+		batch := m.parse.batch
+		if reason, detail, bad := continuityFail(batch, st.cp, st.hasCP, p.cfg.StartSlot, st.slot); bad {
+			return st, p.halt(ctx, st, reason, detail)
+		}
+		if err := p.repo.SaveBlockBatch(ctx, st.cp, batch); err != nil {
+			return st, err
+		}
+		if err := p.consumer.Commit(ctx, m.off); err != nil {
+			return st, err
+		}
+		cp, hasCP, err := p.repo.GetCheckpoint(ctx)
+		if err != nil {
+			return st, err
+		}
+		st.cp, st.hasCP = cp, hasCP
+		st.resume, st.hasResume = m.off, true
+		st.slot++
+		return st, nil
+
+	default:
+		return st, p.halt(ctx, st, domain.HaltReasonDecodeError, fmt.Sprintf("unknown kind %q", m.msg.Kind))
+	}
+}
+
+func startParsePool(workers int) (*pool.OnDemandBlockTaskPool, error) {
+	if workers < 1 {
+		workers = defaultParseWorkers
+	}
+	parsePool, err := pool.NewOnDemandBlockTaskPool(workers, maxDrainPerRound, pool.WithMaxGo(int32(workers)))
+	if err != nil {
+		return nil, fmt.Errorf("create parse pool: %w", err)
+	}
+	if err := parsePool.Start(); err != nil {
+		return nil, fmt.Errorf("start parse pool: %w", err)
+	}
+	return parsePool, nil
+}
+
+// submitParse runs decode+ParseBlock on the pool. done always closes; a panic
+// becomes a parse error so the apply loop halts with DECODE_ERROR instead of hanging.
+func submitParse(ctx context.Context, parsePool *pool.OnDemandBlockTaskPool, msg block.BlockMessage) (*parseResult, error) {
+	r := &parseResult{done: make(chan struct{})}
+	task := pool.TaskFunc(func(context.Context) error {
+		defer close(r.done)
+		defer func() {
+			if v := recover(); v != nil {
+				r.err = fmt.Errorf("parse panic: %v", v)
+			}
+		}()
+		if hook := parseSlotHook; hook != nil {
+			hook(msg.Slot)
+		}
+		r.batch, r.err = decodeAndParse(msg)
+		return nil
+	})
+	if err := parsePool.Submit(ctx, task); err != nil {
+		return nil, fmt.Errorf("submit parse slot %d: %w", msg.Slot, err)
+	}
+	return r, nil
+}
+
+func shutdownParsePool(parsePool *pool.OnDemandBlockTaskPool) {
+	done, err := parsePool.Shutdown()
+	if err != nil {
+		_, _ = parsePool.ShutdownNow()
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		_, _ = parsePool.ShutdownNow()
 	}
 }
 
@@ -217,95 +374,12 @@ func (p *Processor) pollTimeout() time.Duration {
 	return 100 * time.Millisecond
 }
 
-func isEmptyPoll(err error) bool {
-	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
-}
-
-func (p *Processor) applyOne(
-	ctx context.Context,
-	entry bufferedMsg,
-	applySlot uint64,
-	cp domain.Checkpoint,
-	hasCP bool,
-	resumeOffset block.Offset,
-	hasResume bool,
-) (nextSlot uint64, nextResume block.Offset, resumeOK bool, err error) {
-	nextSlot = applySlot
-	nextResume = resumeOffset
-	resumeOK = hasResume
-
-	switch entry.msg.Kind {
-	case block.KindSkipped:
-		if err := p.consumer.Commit(ctx, entry.off); err != nil {
-			return applySlot, resumeOffset, hasResume, err
-		}
-		// Halt rewinds apply to checkpoint+1 (or startSlot). Queue must land on that
-		// same slot. resumeOffset is the last message that stays committed after rewind
-		// (Seek+Commit → next read = rewinded apply). A real block sets that directly.
-		// Skipped-only progress after a DB checkpoint has no in-session block offset, so
-		// the predecessor of this first skipped message is the durable resume point.
-		// Later skips after a known resume leave resumeOffset unchanged (they are undone).
-		nextResume := resumeOffset
-		nextHas := hasResume
-		if !hasResume {
-			nextResume = block.Offset{
-				Topic:     entry.off.Topic,
-				Partition: entry.off.Partition,
-				Offset:    entry.off.Offset - 1,
-			}
-			nextHas = true
-		}
-		return applySlot + 1, nextResume, nextHas, nil
-
-	case block.KindBlock:
-		batch, decErr := decodeAndParse(entry.msg)
-		if decErr != nil {
-			haltErr := p.halt(ctx, domain.HaltReasonDecodeError, applySlot, decErr.Error(), resumeOffset, hasResume, cp, hasCP)
-			if haltErr == nil || errors.Is(haltErr, errHalted) {
-				return applySlot, resumeOffset, hasResume, errHalted
-			}
-			return applySlot, resumeOffset, hasResume, haltErr
-		}
-
-		if reason, detail, bad := continuityFail(batch, cp, hasCP, p.cfg.StartSlot, applySlot); bad {
-			haltErr := p.halt(ctx, reason, applySlot, detail, resumeOffset, hasResume, cp, hasCP)
-			if haltErr == nil || errors.Is(haltErr, errHalted) {
-				return applySlot, resumeOffset, hasResume, errHalted
-			}
-			return applySlot, resumeOffset, hasResume, haltErr
-		}
-
-		prev := domain.Checkpoint{}
-		if hasCP {
-			prev = cp
-		}
-		if err := p.repo.SaveBlockBatch(ctx, prev, batch); err != nil {
-			return applySlot, resumeOffset, hasResume, err
-		}
-		if err := p.consumer.Commit(ctx, entry.off); err != nil {
-			return applySlot, resumeOffset, hasResume, err
-		}
-		return applySlot + 1, entry.off, true, nil
-
-	default:
-		haltErr := p.halt(ctx, domain.HaltReasonDecodeError, applySlot, fmt.Sprintf("unknown kind %q", entry.msg.Kind), resumeOffset, hasResume, cp, hasCP)
-		if haltErr == nil || errors.Is(haltErr, errHalted) {
-			return applySlot, resumeOffset, hasResume, errHalted
-		}
-		return applySlot, resumeOffset, hasResume, haltErr
-	}
-}
-
 func decodeAndParse(msg block.BlockMessage) (domain.BlockBatch, error) {
 	var blk rpc.GetBlockResult
 	if err := json.Unmarshal(msg.Block, &blk); err != nil {
 		return domain.BlockBatch{}, fmt.Errorf("decode block json: %w", err)
 	}
-	batch, err := parser.ParseBlock(msg.Slot, &blk)
-	if err != nil {
-		return domain.BlockBatch{}, err
-	}
-	return batch, nil
+	return parser.ParseBlock(msg.Slot, &blk)
 }
 
 func continuityFail(
@@ -343,23 +417,16 @@ func continuityFail(
 	}
 }
 
-func (p *Processor) halt(
-	ctx context.Context,
-	reason domain.HaltReason,
-	slot uint64,
-	detail string,
-	resumeOffset block.Offset,
-	hasResume bool,
-	cp domain.Checkpoint,
-	hasCP bool,
-) error {
-	halt := domain.Halt{
+// halt records the halt, alerts, rewinds the handed cursor and the queue, then
+// returns errHalted (or the first storage/queue error).
+func (p *Processor) halt(ctx context.Context, st applyState, reason domain.HaltReason, detail string) error {
+	h := domain.Halt{
 		Reason:    reason,
-		Slot:      slot,
+		Slot:      st.slot,
 		Detail:    detail,
 		CreatedAt: time.Now().Unix(),
 	}
-	if err := p.repo.CreateHalt(ctx, halt); err != nil {
+	if err := p.repo.CreateHalt(ctx, h); err != nil {
 		return err
 	}
 
@@ -367,41 +434,37 @@ func (p *Processor) halt(
 		Level:      alert.LevelCritical,
 		Title:      "sol-scanner halt",
 		Chain:      p.cfg.Chain,
-		Slot:       slot,
+		Slot:       st.slot,
 		Reason:     reason.ToString(),
 		Detail:     detail,
 		OccurredAt: time.Now().UTC(),
 	}
 	if err := p.alerter.SendAlert(ctx, al); err != nil {
-		p.logger.Error("SendAlert failed after halt", "err", err, "slot", slot, "reason", reason)
+		p.logger.Error("SendAlert failed after halt", "err", err, "slot", st.slot, "reason", reason)
 	}
 
-	var rewindTo uint64
-	if hasCP {
-		rewindTo = cp.Slot
-	} else {
-		if p.cfg.StartSlot == 0 {
-			rewindTo = 0
-		} else {
-			rewindTo = p.cfg.StartSlot - 1
-		}
+	rewindTo := p.cfg.StartSlot
+	if st.hasCP {
+		rewindTo = st.cp.Slot
+	} else if rewindTo > 0 {
+		rewindTo--
 	}
 	if err := p.cursor.RewindHandedSlot(ctx, rewindTo); err != nil {
 		return err
 	}
 
-	if hasResume {
+	if st.hasResume {
 		// Offset < 0 means "before first message"; Seek would treat -1 as Kafka OffsetEnd.
-		if resumeOffset.Offset >= 0 {
-			if err := p.consumer.Seek(ctx, resumeOffset); err != nil {
+		if st.resume.Offset >= 0 {
+			if err := p.consumer.Seek(ctx, st.resume); err != nil {
 				return err
 			}
 		}
-		if err := p.consumer.Commit(ctx, resumeOffset); err != nil {
+		if err := p.consumer.Commit(ctx, st.resume); err != nil {
 			return err
 		}
 	}
 
-	p.logger.Error("processor halted", "slot", slot, "reason", reason, "detail", detail)
+	p.logger.Error("processor halted", "slot", st.slot, "reason", reason, "detail", detail)
 	return errHalted
 }

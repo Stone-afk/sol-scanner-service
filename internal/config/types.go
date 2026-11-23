@@ -14,10 +14,11 @@ type Config struct {
 // ProcessorConfig is the normalized configuration for the processor process.
 // It has no RPC endpoint and cannot be used to construct an RPC client.
 type ProcessorConfig struct {
-	Chain    ChainConfig
-	Scanner  ScannerConfig
-	Database DatabaseConfig
-	Kafka    KafkaConfig
+	Chain        ChainConfig
+	Scanner      ScannerConfig
+	Database     DatabaseConfig
+	Kafka        KafkaConfig
+	ParseWorkers int // processor.parseWorkers; default 4, range 1–64
 }
 
 // ChainConfig holds chain identity and the optional start slot.
@@ -52,30 +53,39 @@ type KafkaConfig struct {
 }
 
 type rawConfig struct {
-	Chain    rawChainConfig    `yaml:"chain"`
-	RPC      rawRPCConfig      `yaml:"rpc"`
-	Scanner  rawScannerConfig  `yaml:"scanner"`
-	Database rawDatabaseConfig `yaml:"database"`
-	Kafka    rawKafkaConfig    `yaml:"kafka"`
+	Chain     rawChainConfig    `yaml:"chain"`
+	RPC       rawRPCConfig      `yaml:"rpc"`
+	Scanner   rawScannerConfig  `yaml:"scanner"`
+	Database  rawDatabaseConfig `yaml:"database"`
+	Kafka     rawKafkaConfig    `yaml:"kafka"`
+	Processor any               `yaml:"processor"` // LoadForScanner ignores
 }
 
 // rawProcessorConfig accepts every target key. rpc uses the same fixed
 // shape as the scanner so unknown keys fail, but its URL is not expanded
 // or copied into ProcessorConfig.
 type rawProcessorConfig struct {
-	Chain    rawChainConfig    `yaml:"chain"`
-	RPC      rawRPCConfig      `yaml:"rpc"`
-	Scanner  rawScannerConfig  `yaml:"scanner"`
-	Database rawDatabaseConfig `yaml:"database"`
-	Kafka    rawKafkaConfig    `yaml:"kafka"`
+	Chain     rawChainConfig      `yaml:"chain"`
+	RPC       rawRPCConfig        `yaml:"rpc"`
+	Scanner   rawScannerConfig    `yaml:"scanner"`
+	Database  rawDatabaseConfig   `yaml:"database"`
+	Kafka     rawKafkaConfig      `yaml:"kafka"`
+	Processor rawProcessorSection `yaml:"processor"`
 }
 
 type rawMigrationConfig struct {
-	Database rawDatabaseConfig `yaml:"database"`
-	Chain    any               `yaml:"chain"`
-	RPC      any               `yaml:"rpc"`
-	Scanner  any               `yaml:"scanner"`
-	Kafka    any               `yaml:"kafka"`
+	Database  rawDatabaseConfig `yaml:"database"`
+	Chain     any               `yaml:"chain"`
+	RPC       any               `yaml:"rpc"`
+	Scanner   any               `yaml:"scanner"`
+	Kafka     any               `yaml:"kafka"`
+	Processor any               `yaml:"processor"`
+}
+
+// rawProcessorSection holds processor-only knobs. parseWorkers is any so
+// non-integers fail with a field-path error instead of a generic YAML type error.
+type rawProcessorSection struct {
+	ParseWorkers any `yaml:"parseWorkers"`
 }
 
 type rawChainConfig struct {

@@ -2,7 +2,7 @@
 
 只读 Solana **finalized** 扫链服务：同一仓库两个进程——扫块投递区块队列，处理侧解析、一块一事务落库，再按发布游标发下游交易（至少一次，key=签名）。
 
-不做回滚 topic、不回补 `startSlot` 之前的历史、不判断充值/提现业务语义。产品与数据契约、规格三件套在本地 `docs/superpowers/001-sol-scanner-v1/`（不随仓库公开；当前基线 `PLAN-v1.6.5`）。
+不做回滚 topic、不回补 `startSlot` 之前的历史、不判断充值/提现业务语义。产品与数据契约、规格三件套在本地 `docs/superpowers/001-sol-scanner-v1/`（不随仓库公开；当前基线 `PLAN-v1.6.5`）。处理侧消费吞吐优化见 `docs/superpowers/002-processor-consume-throughput/`（链尖 L=300，与 001 A-04=150 并存）。
 
 > 总体验收（PLAN-028）已通过；当前 Infura 环境下 A-04 吞吐门禁为 **blocked**，**不声称已上线或可生产运行**。高吞吐 RPC 下才可将 FA-04 标为 passed。
 

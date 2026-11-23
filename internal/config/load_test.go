@@ -152,6 +152,66 @@ func TestLoadForProcessor(t *testing.T) {
 		assertProcessorShape(t, proc)
 		assertNoRPCMaterial(t, proc, nil)
 	})
+
+	// AC-T03 / AC-T04: processor.parseWorkers default and validation.
+	t.Run("AC-T03 parseWorkers default 4", func(t *testing.T) {
+		path := writeConfig(t, validConfigYAML())
+		proc, err := LoadForProcessor(path, lookupWithoutInfura)
+		if err != nil {
+			requireNoSecrets(t, err.Error())
+			t.Fatalf("LoadForProcessor() error = %v", err)
+		}
+		if proc.ParseWorkers != 4 {
+			t.Fatalf("ParseWorkers = %d, want default 4", proc.ParseWorkers)
+		}
+	})
+
+	t.Run("AC-T03 parseWorkers explicit 4", func(t *testing.T) {
+		path := writeConfig(t, validConfigYAML()+"processor:\n  parseWorkers: 4\n")
+		proc, err := LoadForProcessor(path, lookupWithoutInfura)
+		if err != nil {
+			requireNoSecrets(t, err.Error())
+			t.Fatalf("LoadForProcessor() error = %v", err)
+		}
+		if proc.ParseWorkers != 4 {
+			t.Fatalf("ParseWorkers = %d, want 4", proc.ParseWorkers)
+		}
+	})
+
+	t.Run("AC-T04 parseWorkers rejects", func(t *testing.T) {
+		rejects := []struct {
+			name string
+			yaml string
+		}{
+			{name: "zero", yaml: "processor:\n  parseWorkers: 0\n"},
+			{name: "above 64", yaml: "processor:\n  parseWorkers: 65\n"},
+			{name: "non-numeric", yaml: "processor:\n  parseWorkers: abc\n"},
+		}
+		for _, tt := range rejects {
+			t.Run(tt.name, func(t *testing.T) {
+				path := writeConfig(t, validConfigYAML()+tt.yaml)
+				_, err := LoadForProcessor(path, lookupWithoutInfura)
+				if err == nil {
+					t.Fatal("LoadForProcessor() succeeded, want error")
+				}
+				requireNoSecrets(t, err.Error())
+				if !strings.Contains(err.Error(), "processor.parseWorkers") {
+					t.Errorf("error = %q, want substring %q", err.Error(), "processor.parseWorkers")
+				}
+			})
+		}
+	})
+}
+
+func TestLoadForScannerIgnoresProcessorSection(t *testing.T) {
+	// FR-T04: shared config file may include processor.parseWorkers; scanner must ignore it.
+	path := writeConfig(t, validConfigYAML()+"processor:\n  parseWorkers: 8\n")
+	cfg, err := LoadForScanner(path, testLookupEnv)
+	if err != nil {
+		requireNoSecrets(t, err.Error())
+		t.Fatalf("LoadForScanner() error = %v", err)
+	}
+	assertScannerShape(t, cfg)
 }
 
 func TestLoadForScannerExampleFile(t *testing.T) {
@@ -169,6 +229,7 @@ func TestLoadForScannerExampleFile(t *testing.T) {
 		"slotsPerWorker: 500",
 		"blockTopic: sol-scanner.blocks",
 		"transactionTopic: sol-scanner.transactions",
+		"parseWorkers: 4",
 	} {
 		if !strings.Contains(contents, token) {
 			t.Errorf("config.example.yaml missing %s", token)
@@ -369,6 +430,9 @@ func assertProcessorShape(t *testing.T, cfg ProcessorConfig) {
 	}
 	if cfg.Database.DSN != testDSN {
 		t.Fatal("DSN mismatch")
+	}
+	if cfg.ParseWorkers != 4 {
+		t.Fatalf("ParseWorkers = %d, want default 4", cfg.ParseWorkers)
 	}
 }
 

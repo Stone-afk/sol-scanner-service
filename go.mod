@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/Stone-afk/chain-api-go v0.1.0
 	github.com/confluentinc/confluent-kafka-go/v2 v2.11.0
+	github.com/ecodeclub/ekit v0.0.10
 	github.com/solana-foundation/solana-go/v2 v2.3.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/postgres v1.6.0
@@ -14,7 +15,7 @@ require (
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/blendle/zapdriver v1.3.1 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/gagliardetto/binary v0.8.0 // indirect
 	github.com/gagliardetto/treeout v0.1.4 // indirect

@@ -157,6 +157,8 @@ func invalidYAML(err error) error {
 		field = "rpc." + field
 	case strings.Contains(msg, "rawDatabaseConfig"):
 		field = "database." + field
+	case strings.Contains(msg, "rawProcessorSection"):
+		field = "processor." + field
 	}
 	return fmt.Errorf("invalid YAML configuration: field %s not found", field)
 }
@@ -213,12 +215,53 @@ func normalizeProcessor(raw rawProcessorConfig, dsn string, brokers []string) (P
 	if err != nil {
 		return ProcessorConfig{}, err
 	}
+	parseWorkers, err := normalizeParseWorkers(raw.Processor.ParseWorkers)
+	if err != nil {
+		return ProcessorConfig{}, err
+	}
 	return ProcessorConfig{
-		Chain:    normalizeChain(raw.Chain),
-		Scanner:  scanner,
-		Database: DatabaseConfig{DSN: dsn},
-		Kafka:    normalizeKafka(raw.Kafka, brokers),
+		Chain:        normalizeChain(raw.Chain),
+		Scanner:      scanner,
+		Database:     DatabaseConfig{DSN: dsn},
+		Kafka:        normalizeKafka(raw.Kafka, brokers),
+		ParseWorkers: parseWorkers,
 	}, nil
+}
+
+const (
+	defaultParseWorkers = 4
+	minParseWorkers     = 1
+	maxParseWorkers     = 64
+)
+
+func normalizeParseWorkers(raw any) (int, error) {
+	if raw == nil {
+		return defaultParseWorkers, nil
+	}
+	n, ok := yamlInt(raw)
+	if !ok {
+		return 0, fmt.Errorf("invalid configuration: processor.parseWorkers must be an integer between 1 and 64")
+	}
+	if n < minParseWorkers || n > maxParseWorkers {
+		return 0, fmt.Errorf("invalid configuration: processor.parseWorkers must be between 1 and 64")
+	}
+	return n, nil
+}
+
+func yamlInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case uint64:
+		if n > uint64(^uint(0)>>1) {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
 }
 
 func normalizeChain(raw rawChainConfig) ChainConfig {

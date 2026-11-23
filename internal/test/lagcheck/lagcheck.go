@@ -8,8 +8,11 @@ import (
 	"github.com/Stone-afk/sol-scanner-service/internal/scanner/provider"
 )
 
-// LagThreshold is the A-04 last_lag limit (slots). Live harness must use this constant.
+// LagThreshold is the A-04 last_lag limit (slots). Live harness must keep this for FA-04.
 const LagThreshold = 150
+
+// ThroughputLagThreshold is the 002 AC-T06 tip-lag limit (slots). Coexists with LagThreshold=150.
+const ThroughputLagThreshold = 300
 
 type Verdict string
 
@@ -152,7 +155,22 @@ func Judge(obs Observation, gate Gate) Verdict {
 	return VerdictPass
 }
 
-// FAStatus maps Judge verdict + gate to FA-04 status strings.
+// JudgeThroughput applies AC-T06 / 乙-a: insufficient|unknown → recorded (not Fatal);
+// sufficient + lag > ThroughputLagThreshold → fail; sufficient + lag ≤ threshold → pass.
+func JudgeThroughput(obs Observation, gate Gate) Verdict {
+	if obs.Err != nil {
+		return VerdictFail
+	}
+	if obs.LimitSignals > 0 || gate == GateInsufficient || gate == GateUnknown {
+		return VerdictRecorded
+	}
+	if obs.Samples == 0 || obs.LastLag > ThroughputLagThreshold {
+		return VerdictFail
+	}
+	return VerdictPass
+}
+
+// FAStatus maps Judge / JudgeThroughput verdict + gate to status strings (passed/failed/blocked).
 func FAStatus(v Verdict, gate Gate) string {
 	switch v {
 	case VerdictFail:

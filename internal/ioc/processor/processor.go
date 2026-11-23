@@ -56,6 +56,7 @@ func InitProcessor(
 		Chain:        cfg.Chain.Name,
 		StartSlot:    cfg.Chain.StartSlot,
 		PollInterval: cfg.Scanner.PollInterval,
+		ParseWorkers: cfg.ParseWorkers,
 	}, logger)
 }
 

@@ -34,9 +34,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// Live read-only acceptance (design §6.6 A-01..A-04 / AC-073..AC-076, AC-097).
-// Skips unless SOL_SCANNER_LIVE_E2E=1. Non-local Postgres DSN fails before dial.
-// Never log full URL, DSN, or API keys.
+// Live read-only acceptance (design §6.6 A-01..A-04 / AC-073..AC-076, AC-097;
+// 002 AC-T06 tip lag L=300 + 乙-a). Skips unless SOL_SCANNER_LIVE_E2E=1.
+// Non-local Postgres DSN fails before dial. Never log full URL, DSN, or API keys.
 
 const (
 	liveEnvVar           = "SOL_SCANNER_LIVE_E2E"
@@ -834,14 +834,18 @@ func (h *liveHarness) assertA04(t *testing.T) {
 	h.stopBinaries()
 	probe := h.throughputProbe(ctx, t)
 	gate := lagcheck.ClassifyThroughput(probe, obs)
-	verdict := lagcheck.Judge(obs, gate)
-	fa04 := lagcheck.FAStatus(verdict, gate)
+	// A-04 keeps LagThreshold=150 for FA-04 evidence; Fatal follows AC-T06 (L=300 + 乙-a).
+	a04Verdict := lagcheck.Judge(obs, gate)
+	fa04 := lagcheck.FAStatus(a04Verdict, gate)
+	tpVerdict := lagcheck.JudgeThroughput(obs, gate)
+	tpStatus := lagcheck.FAStatus(tpVerdict, gate)
 	tipRate, probeRate := a04Rates(obs, probe)
 	line := fmt.Sprintf(
-		"A-04 verdict=%s gate=%s fa04=%s samples=%d last_lag=%d max_lag=%d limit_signals=%d tip_rate=%.2f probe_rate=%.2f",
-		verdict, gate, fa04, obs.Samples, obs.LastLag, obs.MaxLag, obs.LimitSignals, tipRate, probeRate,
+		"A-04 verdict=%s gate=%s fa04=%s samples=%d last_lag=%d max_lag=%d limit_signals=%d tip_rate=%.2f probe_rate=%.2f throughput_lag_limit=%d throughput_verdict=%s throughput_status=%s",
+		a04Verdict, gate, fa04, obs.Samples, obs.LastLag, obs.MaxLag, obs.LimitSignals, tipRate, probeRate,
+		lagcheck.ThroughputLagThreshold, tpVerdict, tpStatus,
 	)
-	if verdict == lagcheck.VerdictFail {
+	if tpVerdict == lagcheck.VerdictFail {
 		t.Fatalf("%s", line)
 	}
 	t.Logf("%s", line)

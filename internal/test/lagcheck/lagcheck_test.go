@@ -298,6 +298,102 @@ func TestLagThresholdConstant(t *testing.T) {
 	}
 }
 
+func TestThroughputLagThresholdConstant(t *testing.T) {
+	t.Parallel()
+	if ThroughputLagThreshold != 300 {
+		t.Fatalf("ThroughputLagThreshold=%d want 300", ThroughputLagThreshold)
+	}
+	if LagThreshold == ThroughputLagThreshold {
+		t.Fatal("A-04 150 and AC-T06 300 must coexist as distinct constants")
+	}
+}
+
+func TestJudgeThroughput(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		obs    Observation
+		gate   Gate
+		wantV  Verdict
+		wantFA string
+	}{
+		{
+			name:   "sufficient_lag_le_300_passed",
+			obs:    Observation{Samples: 1, LastLag: 300},
+			gate:   GateSufficient,
+			wantV:  VerdictPass,
+			wantFA: "passed",
+		},
+		{
+			name:   "sufficient_lag_gt_300_fail",
+			obs:    Observation{Samples: 1, LastLag: 301},
+			gate:   GateSufficient,
+			wantV:  VerdictFail,
+			wantFA: "failed",
+		},
+		{
+			name:   "insufficient_lag_high_blocked",
+			obs:    Observation{Samples: 1, LastLag: 2000},
+			gate:   GateInsufficient,
+			wantV:  VerdictRecorded,
+			wantFA: "blocked",
+		},
+		{
+			name:   "unknown_lag_high_blocked_yi_a",
+			obs:    Observation{Samples: 1, LastLag: 2000},
+			gate:   GateUnknown,
+			wantV:  VerdictRecorded,
+			wantFA: "blocked",
+		},
+		{
+			name:   "sufficient_mid_lag_passed_vs_a04",
+			obs:    Observation{Samples: 1, LastLag: 200}, // >150 A-04 fail, ≤300 AC-T06 pass
+			gate:   GateSufficient,
+			wantV:  VerdictPass,
+			wantFA: "passed",
+		},
+		{
+			name:   "err_fail",
+			obs:    Observation{Err: errors.New("rpc down")},
+			gate:   GateSufficient,
+			wantV:  VerdictFail,
+			wantFA: "failed",
+		},
+		{
+			name:   "no_samples_sufficient_fail",
+			obs:    Observation{Samples: 0},
+			gate:   GateSufficient,
+			wantV:  VerdictFail,
+			wantFA: "failed",
+		},
+		{
+			name:   "observe_limit_signals_blocked",
+			obs:    Observation{Samples: 1, LastLag: 10, LimitSignals: 1},
+			gate:   GateSufficient,
+			wantV:  VerdictRecorded,
+			wantFA: "blocked",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := JudgeThroughput(tc.obs, tc.gate)
+			if got != tc.wantV {
+				t.Fatalf("JudgeThroughput=%s want %s", got, tc.wantV)
+			}
+			if fa := FAStatus(got, tc.gate); fa != tc.wantFA {
+				t.Fatalf("FAStatus=%s want %s", fa, tc.wantFA)
+			}
+			// Guard: mid lag still fails A-04 Judge when gate sufficient.
+			if tc.name == "sufficient_mid_lag_passed_vs_a04" {
+				if Judge(tc.obs, tc.gate) != VerdictFail {
+					t.Fatal("A-04 Judge must still fail last_lag=200 with LagThreshold=150")
+				}
+			}
+		})
+	}
+}
+
 // stepSource: tip = tip0 + tipStep*n; checkpoint = tip0 - lag0 + cpStep*n (when found).
 // tipErrs / cpErrs keyed by tick index (0-based) override the call for that tick.
 func stepSource(

@@ -14,3 +14,5 @@ kafka:
   brokers: ["127.0.0.1:9092"]
   blockTopic: sol-scanner.blocks          # 扫块 → 处理
   transactionTopic: sol-scanner.transactions  # 处理 → 下游
+processor:
+  parseWorkers: 4         # 解析并发上限（1–64）；PLAN-001 仍串行，PLAN-002 起生效
