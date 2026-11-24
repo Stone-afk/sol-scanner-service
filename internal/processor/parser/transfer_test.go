@@ -153,11 +153,11 @@ func TestDecodeTransferCheckedWithFeeP09(t *testing.T) {
 	auth := solana.MustPublicKeyFromBase58("ETvhVmPeahyycn67xs3qaZK6PCD77V3UHY9ojEwQ3aAi")
 	prog := solana.Token2022ProgramID
 
-	data := make([]byte, 2+8+1+8)
-	data[0], data[1] = 26, 1
-	binary.LittleEndian.PutUint64(data[2:], 1000)
-	data[10] = 9
-	binary.LittleEndian.PutUint64(data[11:], 42)
+	data := make([]byte, splFeeHeader+u64Len+u8Len+u64Len)
+	data[0], data[u8Len] = splTransferFeeExt, splTransferCheckedFee
+	binary.LittleEndian.PutUint64(data[splFeeHeader:], 1000)
+	data[splFeeHeader+u64Len] = 9
+	binary.LittleEndian.PutUint64(data[splFeeHeader+u64Len+u8Len:], 42)
 
 	dec, ok, err := decodeInstruction(prog, []solana.PublicKey{src, mint, dst, auth}, data)
 	if err != nil {
@@ -186,6 +186,8 @@ func TestDecodeTruncatedP10(t *testing.T) {
 	src := solana.MustPublicKeyFromBase58("EnHdUh7vi1Fo1ncfHB4HbMpmd4CW6fnVLv1fTgPEmczL")
 	dst := solana.MustPublicKeyFromBase58("47AJoNqacLygyXKpTWZd7rzdcsuCcBx39Gdc6gn5FhND")
 	keys := []solana.PublicKey{src, dst, solana.SystemProgramID}
+	disc := make([]byte, u32Len+u64Len)
+	binary.LittleEndian.PutUint32(disc, sysTransfer)
 	tx := &solana.Transaction{
 		Signatures: make([]solana.Signature, 1),
 		Message: solana.Message{
@@ -193,7 +195,7 @@ func TestDecodeTruncatedP10(t *testing.T) {
 			Instructions: []solana.CompiledInstruction{{
 				ProgramIDIndex: 2,
 				Accounts:       []uint16{0, 1},
-				Data:           solana.Base58{2, 0, 0}, // System transfer disc incomplete / truncated lamports
+				Data:           solana.Base58(disc[:u32Len-u8Len]), // shorter than a discriminator
 			}},
 		},
 	}
@@ -214,9 +216,9 @@ func TestTransferOwnerLookup(t *testing.T) {
 		ownerFrom := solana.MustPublicKeyFromBase58("ETvhVmPeahyycn67xs3qaZK6PCD77V3UHY9ojEwQ3aAi")
 		ownerTo := solana.MustPublicKeyFromBase58("9uAkfUJCYh1HyKaK19wce1PctPjXhRMCGwTTVeAuPTq")
 		keys := []solana.PublicKey{src, dst, mint, solana.TokenProgramID, ownerFrom, ownerTo}
-		data := make([]byte, 1+8)
-		data[0] = 3 // SPL transfer
-		binary.LittleEndian.PutUint64(data[1:], 7)
+		data := make([]byte, u8Len+u64Len)
+		data[0] = splTransfer
+		binary.LittleEndian.PutUint64(data[u8Len:], 7)
 		tx := &solana.Transaction{
 			Signatures: make([]solana.Signature, 1),
 			Message: solana.Message{
@@ -257,9 +259,9 @@ func TestTransferOwnerLookup(t *testing.T) {
 		src := solana.MustPublicKeyFromBase58("EnHdUh7vi1Fo1ncfHB4HbMpmd4CW6fnVLv1fTgPEmczL")
 		dst := solana.MustPublicKeyFromBase58("47AJoNqacLygyXKpTWZd7rzdcsuCcBx39Gdc6gn5FhND")
 		keys := []solana.PublicKey{src, dst, solana.TokenProgramID}
-		data := make([]byte, 1+8)
-		data[0] = 3
-		binary.LittleEndian.PutUint64(data[1:], 1)
+		data := make([]byte, u8Len+u64Len)
+		data[0] = splTransfer
+		binary.LittleEndian.PutUint64(data[u8Len:], 1)
 		tx := &solana.Transaction{
 			Signatures: make([]solana.Signature, 1),
 			Message: solana.Message{
@@ -288,9 +290,9 @@ func TestTransferOwnerLookup(t *testing.T) {
 		from := solana.MustPublicKeyFromBase58("9uAkfUJCYh1HyKaK19wce1PctPjXhRMCGwTTVeAuPTq")
 		to := solana.MustPublicKeyFromBase58("ETvhVmPeahyycn67xs3qaZK6PCD77V3UHY9ojEwQ3aAi")
 		keys := []solana.PublicKey{from, to, solana.SystemProgramID}
-		data := make([]byte, 4+8)
-		binary.LittleEndian.PutUint32(data[0:], 2)
-		binary.LittleEndian.PutUint64(data[4:], 1)
+		data := make([]byte, u32Len+u64Len)
+		binary.LittleEndian.PutUint32(data[0:], sysTransfer)
+		binary.LittleEndian.PutUint64(data[u32Len:], 1)
 		tx := &solana.Transaction{
 			Signatures: make([]solana.Signature, 1),
 			Message: solana.Message{

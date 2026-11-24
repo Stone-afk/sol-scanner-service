@@ -7,6 +7,36 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
+// 指令数据里的定长字段宽度。
+const (
+	u8Len        = 1
+	u32Len       = 4
+	u64Len       = 8
+	pubkeyLen    = 32
+	splFeeHeader = u8Len + u8Len
+)
+
+// System 指令判别符，小端 u32。
+const (
+	sysCreateAccount         uint32 = 0
+	sysTransfer              uint32 = 2
+	sysCreateAccountWithSeed uint32 = 3
+	sysWithdrawNonce         uint32 = 5
+	sysTransferWithSeed      uint32 = 11
+)
+
+// SPL Token / Token-2022 指令判别符，u8。
+const (
+	splTransfer           byte = 3
+	splMintTo             byte = 7
+	splBurn               byte = 8
+	splTransferChecked    byte = 12
+	splMintToChecked      byte = 14
+	splBurnChecked        byte = 15
+	splTransferFeeExt     byte = 26
+	splTransferCheckedFee byte = 1
+)
+
 type decodedTransfer struct {
 	program     domain.Program
 	kind        domain.TransferKind
@@ -35,16 +65,16 @@ func decodeInstruction(programID solana.PublicKey, accounts []solana.PublicKey, 
 }
 
 func decodeSystem(accounts []solana.PublicKey, data []byte) (decodedTransfer, bool, error) {
-	if len(data) < 4 {
+	if len(data) < u32Len {
 		// Not enough to read a System discriminator — treat as truncated in-scope attempt
 		// only when we cannot classify; short buffer with no disc is DecodeError for System
 		// callers that already selected System program (always in-family).
 		return decodedTransfer{}, false, DecodeError{Reason: "data"}
 	}
-	disc := binary.LittleEndian.Uint32(data[:4])
+	disc := binary.LittleEndian.Uint32(data[:u32Len])
 	switch disc {
-	case 2: // transfer
-		if len(data) < 4+8 {
+	case sysTransfer:
+		if len(data) < u32Len+u64Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		from, to, err := requireAccounts(accounts, 0, 1)
@@ -56,10 +86,10 @@ func decodeSystem(accounts []solana.PublicKey, data []byte) (decodedTransfer, bo
 			kind:    domain.KindTransfer,
 			from:    from,
 			to:      to,
-			amount:  binary.LittleEndian.Uint64(data[4:12]),
+			amount:  binary.LittleEndian.Uint64(data[u32Len : u32Len+u64Len]),
 		}, true, nil
-	case 11: // transferWithSeed
-		if len(data) < 4+8 {
+	case sysTransferWithSeed:
+		if len(data) < u32Len+u64Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		from, err := requireAccount(accounts, 0)
@@ -75,10 +105,10 @@ func decodeSystem(accounts []solana.PublicKey, data []byte) (decodedTransfer, bo
 			kind:    domain.KindTransferWithSeed,
 			from:    from,
 			to:      to,
-			amount:  binary.LittleEndian.Uint64(data[4:12]),
+			amount:  binary.LittleEndian.Uint64(data[u32Len : u32Len+u64Len]),
 		}, true, nil
-	case 0: // createAccount
-		if len(data) < 4+8+8+32 {
+	case sysCreateAccount:
+		if len(data) < u32Len+u64Len+u64Len+pubkeyLen {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		from, to, err := requireAccounts(accounts, 0, 1)
@@ -90,9 +120,9 @@ func decodeSystem(accounts []solana.PublicKey, data []byte) (decodedTransfer, bo
 			kind:    domain.KindCreateAccount,
 			from:    from,
 			to:      to,
-			amount:  binary.LittleEndian.Uint64(data[4:12]),
+			amount:  binary.LittleEndian.Uint64(data[u32Len : u32Len+u64Len]),
 		}, true, nil
-	case 3: // createAccountWithSeed
+	case sysCreateAccountWithSeed:
 		from, to, err := requireAccounts(accounts, 0, 1)
 		if err != nil {
 			return decodedTransfer{}, true, err
@@ -108,8 +138,8 @@ func decodeSystem(accounts []solana.PublicKey, data []byte) (decodedTransfer, bo
 			to:      to,
 			amount:  lamports,
 		}, true, nil
-	case 5: // withdrawNonceAccount
-		if len(data) < 4+8 {
+	case sysWithdrawNonce:
+		if len(data) < u32Len+u64Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		from, to, err := requireAccounts(accounts, 0, 1)
@@ -121,7 +151,7 @@ func decodeSystem(accounts []solana.PublicKey, data []byte) (decodedTransfer, bo
 			kind:    domain.KindWithdrawNonceAccount,
 			from:    from,
 			to:      to,
-			amount:  binary.LittleEndian.Uint64(data[4:12]),
+			amount:  binary.LittleEndian.Uint64(data[u32Len : u32Len+u64Len]),
 		}, true, nil
 	default:
 		return decodedTransfer{}, false, nil
@@ -129,29 +159,29 @@ func decodeSystem(accounts []solana.PublicKey, data []byte) (decodedTransfer, bo
 }
 
 func readCreateAccountWithSeedLamports(data []byte) (uint64, error) {
-	// disc(4) + base(32) + seed_len(8) + seed + lamports(8) + space(8) + owner(32)
-	const minBeforeSeed = 4 + 32 + 8
+	// disc + base pubkey + seed_len, then seed, then lamports.
+	const minBeforeSeed = u32Len + pubkeyLen + u64Len
 	if len(data) < minBeforeSeed {
 		return 0, DecodeError{Reason: "data"}
 	}
-	seedLen := binary.LittleEndian.Uint64(data[4+32 : 4+32+8])
+	seedLen := binary.LittleEndian.Uint64(data[u32Len+pubkeyLen : u32Len+pubkeyLen+u64Len])
 	off := minBeforeSeed + int(seedLen)
-	if seedLen > uint64(len(data)) || off+8 > len(data) {
+	if seedLen > uint64(len(data)) || off+u64Len > len(data) {
 		return 0, DecodeError{Reason: "data"}
 	}
-	return binary.LittleEndian.Uint64(data[off : off+8]), nil
+	return binary.LittleEndian.Uint64(data[off : off+u64Len]), nil
 }
 
 func decodeToken2022(accounts []solana.PublicKey, data []byte) (decodedTransfer, bool, error) {
-	if len(data) >= 1 && data[0] == 26 {
-		if len(data) < 2 {
+	if len(data) >= u8Len && data[0] == splTransferFeeExt {
+		if len(data) < splFeeHeader {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
-		if data[1] != 1 {
+		if data[u8Len] != splTransferCheckedFee {
 			return decodedTransfer{}, false, nil
 		}
 		// transferCheckedWithFee: u8,u8,u64 amount,u8 decimals,u64 fee
-		if len(data) < 2+8+1+8 {
+		if len(data) < splFeeHeader+u64Len+u8Len+u64Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		from, err := requireAccount(accounts, 0)
@@ -172,10 +202,10 @@ func decodeToken2022(accounts []solana.PublicKey, data []byte) (decodedTransfer,
 			from:        from,
 			to:          to,
 			mint:        mint,
-			amount:      binary.LittleEndian.Uint64(data[2:10]),
-			decimals:    data[10],
+			amount:      binary.LittleEndian.Uint64(data[splFeeHeader : splFeeHeader+u64Len]),
+			decimals:    data[splFeeHeader+u64Len],
 			hasDecimals: true,
-			fee:         binary.LittleEndian.Uint64(data[11:19]),
+			fee:         binary.LittleEndian.Uint64(data[splFeeHeader+u64Len+u8Len : splFeeHeader+u64Len+u8Len+u64Len]),
 			hasFee:      true,
 		}, true, nil
 	}
@@ -183,12 +213,12 @@ func decodeToken2022(accounts []solana.PublicKey, data []byte) (decodedTransfer,
 }
 
 func decodeSPLToken(program domain.Program, accounts []solana.PublicKey, data []byte) (decodedTransfer, bool, error) {
-	if len(data) < 1 {
+	if len(data) < u8Len {
 		return decodedTransfer{}, false, DecodeError{Reason: "data"}
 	}
 	switch data[0] {
-	case 3: // transfer — mint backfilled later
-		if len(data) < 1+8 {
+	case splTransfer: // mint backfilled later
+		if len(data) < u8Len+u64Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		from, to, err := requireAccounts(accounts, 0, 1)
@@ -200,10 +230,10 @@ func decodeSPLToken(program domain.Program, accounts []solana.PublicKey, data []
 			kind:    domain.KindTransfer,
 			from:    from,
 			to:      to,
-			amount:  binary.LittleEndian.Uint64(data[1:9]),
+			amount:  binary.LittleEndian.Uint64(data[u8Len : u8Len+u64Len]),
 		}, true, nil
-	case 12: // transferChecked
-		if len(data) < 1+8+1 {
+	case splTransferChecked:
+		if len(data) < u8Len+u64Len+u8Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		from, err := requireAccount(accounts, 0)
@@ -224,12 +254,12 @@ func decodeSPLToken(program domain.Program, accounts []solana.PublicKey, data []
 			from:        from,
 			to:          to,
 			mint:        mint,
-			amount:      binary.LittleEndian.Uint64(data[1:9]),
-			decimals:    data[9],
+			amount:      binary.LittleEndian.Uint64(data[u8Len : u8Len+u64Len]),
+			decimals:    data[u8Len+u64Len],
 			hasDecimals: true,
 		}, true, nil
-	case 7: // mintTo
-		if len(data) < 1+8 {
+	case splMintTo:
+		if len(data) < u8Len+u64Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		mint, err := requireAccount(accounts, 0)
@@ -245,10 +275,10 @@ func decodeSPLToken(program domain.Program, accounts []solana.PublicKey, data []
 			kind:    domain.KindMintTo,
 			to:      to,
 			mint:    mint,
-			amount:  binary.LittleEndian.Uint64(data[1:9]),
+			amount:  binary.LittleEndian.Uint64(data[u8Len : u8Len+u64Len]),
 		}, true, nil
-	case 14: // mintToChecked
-		if len(data) < 1+8+1 {
+	case splMintToChecked:
+		if len(data) < u8Len+u64Len+u8Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		mint, err := requireAccount(accounts, 0)
@@ -264,12 +294,12 @@ func decodeSPLToken(program domain.Program, accounts []solana.PublicKey, data []
 			kind:        domain.KindMintToChecked,
 			to:          to,
 			mint:        mint,
-			amount:      binary.LittleEndian.Uint64(data[1:9]),
-			decimals:    data[9],
+			amount:      binary.LittleEndian.Uint64(data[u8Len : u8Len+u64Len]),
+			decimals:    data[u8Len+u64Len],
 			hasDecimals: true,
 		}, true, nil
-	case 8: // burn
-		if len(data) < 1+8 {
+	case splBurn:
+		if len(data) < u8Len+u64Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		from, err := requireAccount(accounts, 0)
@@ -285,10 +315,10 @@ func decodeSPLToken(program domain.Program, accounts []solana.PublicKey, data []
 			kind:    domain.KindBurn,
 			from:    from,
 			mint:    mint,
-			amount:  binary.LittleEndian.Uint64(data[1:9]),
+			amount:  binary.LittleEndian.Uint64(data[u8Len : u8Len+u64Len]),
 		}, true, nil
-	case 15: // burnChecked
-		if len(data) < 1+8+1 {
+	case splBurnChecked:
+		if len(data) < u8Len+u64Len+u8Len {
 			return decodedTransfer{}, true, DecodeError{Reason: "data"}
 		}
 		from, err := requireAccount(accounts, 0)
@@ -304,8 +334,8 @@ func decodeSPLToken(program domain.Program, accounts []solana.PublicKey, data []
 			kind:        domain.KindBurnChecked,
 			from:        from,
 			mint:        mint,
-			amount:      binary.LittleEndian.Uint64(data[1:9]),
-			decimals:    data[9],
+			amount:      binary.LittleEndian.Uint64(data[u8Len : u8Len+u64Len]),
+			decimals:    data[u8Len+u64Len],
 			hasDecimals: true,
 		}, true, nil
 	default:

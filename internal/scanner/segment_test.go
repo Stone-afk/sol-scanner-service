@@ -1,8 +1,48 @@
 package scanner
 
 import (
+	"math"
 	"testing"
 )
+
+func TestHandoffWindow(t *testing.T) {
+	// AC-S03
+	t.Parallel()
+
+	cases := []struct {
+		name                   string
+		handed                 uint64
+		hasCursor              bool
+		start, step, finalized uint64
+		wantPrev, wantNext     uint64
+		wantRight              uint64
+		wantOK                 bool
+	}{
+		{name: "cursor_full_step", handed: 1000, hasCursor: true, step: 20000, finalized: 30000,
+			wantPrev: 1000, wantNext: 1001, wantRight: 21000, wantOK: true},
+		{name: "no_cursor_caught_up", start: 500, step: 20000, finalized: 400},
+		{name: "finalized_caps_right", handed: 1000, hasCursor: true, step: 20000, finalized: 1500,
+			wantPrev: 1000, wantNext: 1001, wantRight: 1500, wantOK: true},
+		{name: "right_overflow", handed: math.MaxUint64 - 5, hasCursor: true, step: 20000, finalized: math.MaxUint64 - 1,
+			wantPrev: math.MaxUint64 - 5, wantNext: math.MaxUint64 - 4, wantRight: math.MaxUint64 - 1, wantOK: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			prev, next, right, ok := handoffWindow(tc.handed, tc.hasCursor, tc.start, tc.step, tc.finalized)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if prev != tc.wantPrev || next != tc.wantNext || right != tc.wantRight {
+				t.Fatalf("(prev,next,right) = (%d,%d,%d), want (%d,%d,%d)",
+					prev, next, right, tc.wantPrev, tc.wantNext, tc.wantRight)
+			}
+		})
+	}
+}
 
 func TestSegments(t *testing.T) {
 	t.Parallel()

@@ -17,10 +17,10 @@ type scanDAO struct {
 
 // NewScanDAO returns a PostgreSQL-backed ScanDAO.
 func NewScanDAO(db *gorm.DB) ScanDAO {
-	return scanDAO{db: db}
+	return &scanDAO{db: db}
 }
 
-func (d scanDAO) GetCheckpoint(ctx context.Context) (Checkpoint, bool, error) {
+func (d *scanDAO) GetCheckpoint(ctx context.Context) (Checkpoint, bool, error) {
 	var entity Checkpoint
 	err := d.db.WithContext(ctx).Where("id = ?", 1).Take(&entity).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -32,7 +32,7 @@ func (d scanDAO) GetCheckpoint(ctx context.Context) (Checkpoint, bool, error) {
 	return entity, true, nil
 }
 
-func (d scanDAO) SaveBlockBatch(ctx context.Context, prev Checkpoint, batch ScanBatch) error {
+func (d *scanDAO) SaveBlockBatch(ctx context.Context, prev Checkpoint, batch ScanBatch) error {
 	block := batch.Block
 	block.CreatedAt = time.Now().Unix()
 
@@ -99,14 +99,14 @@ func (d scanDAO) SaveBlockBatch(ctx context.Context, prev Checkpoint, batch Scan
 	return nil
 }
 
-func (d scanDAO) CreateHalt(ctx context.Context, halt Halt) error {
+func (d *scanDAO) CreateHalt(ctx context.Context, halt Halt) error {
 	if err := d.db.WithContext(ctx).Select("Reason", "Slot", "Detail", "CreatedAt").Create(&halt).Error; err != nil {
 		return fmt.Errorf("create halt: %w", err)
 	}
 	return nil
 }
 
-func (d scanDAO) HasUnresolvedHalt(ctx context.Context) (bool, error) {
+func (d *scanDAO) HasUnresolvedHalt(ctx context.Context) (bool, error) {
 	var exists bool
 	if err := d.db.WithContext(ctx).Raw(
 		`SELECT EXISTS(SELECT 1 FROM sol_scan_halts WHERE resolved_at IS NULL)`,

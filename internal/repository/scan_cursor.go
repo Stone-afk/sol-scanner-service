@@ -23,14 +23,14 @@ type scanCursorRepository struct {
 
 // NewScanCursorRepository returns a domain-facing ScanCursorRepository over a ScanCursorDAO.
 func NewScanCursorRepository(dao postgre.ScanCursorDAO) ScanCursorRepository {
-	return scanCursorRepository{dao: dao}
+	return &scanCursorRepository{dao: dao}
 }
 
-func (r scanCursorRepository) GetHandedSlot(ctx context.Context) (uint64, bool, error) {
+func (r *scanCursorRepository) GetHandedSlot(ctx context.Context) (uint64, bool, error) {
 	return r.dao.GetHandedSlot(ctx)
 }
 
-func (r scanCursorRepository) AdvanceHandedSlot(ctx context.Context, prev, next uint64) error {
+func (r *scanCursorRepository) AdvanceHandedSlot(ctx context.Context, prev, next uint64) error {
 	err := r.dao.AdvanceHandedSlot(ctx, prev, next)
 	if errors.Is(err, postgre.ErrHandedSlotConflict) {
 		return ErrHandedSlotConflict
@@ -38,6 +38,6 @@ func (r scanCursorRepository) AdvanceHandedSlot(ctx context.Context, prev, next 
 	return err
 }
 
-func (r scanCursorRepository) RewindHandedSlot(ctx context.Context, slot uint64) error {
+func (r *scanCursorRepository) RewindHandedSlot(ctx context.Context, slot uint64) error {
 	return r.dao.RewindHandedSlot(ctx, slot)
 }

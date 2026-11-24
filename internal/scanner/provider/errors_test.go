@@ -35,7 +35,7 @@ func TestRetryTransient(t *testing.T) {
 		if attempts != 3 {
 			t.Fatalf("attempts = %d, want 3", attempts)
 		}
-		wantSleeps := []time.Duration{250 * time.Millisecond, time.Second}
+		wantSleeps := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond}
 		if len(sleeps) != len(wantSleeps) {
 			t.Fatalf("sleeps = %v, want %v", sleeps, wantSleeps)
 		}
@@ -56,7 +56,7 @@ func TestRetryTransient(t *testing.T) {
 		if attempts != 3 {
 			t.Fatalf("attempts = %d, want 3", attempts)
 		}
-		wantSleeps := []time.Duration{250 * time.Millisecond, time.Second}
+		wantSleeps := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond}
 		if len(sleeps) != len(wantSleeps) {
 			t.Fatalf("sleeps = %v, want %v", sleeps, wantSleeps)
 		}
@@ -67,6 +67,9 @@ func TestRetryTransient(t *testing.T) {
 		}
 		if KindOf(err) != ErrorKindTransient {
 			t.Fatalf("KindOf = %q, want TRANSIENT", KindOf(err))
+		}
+		if strings.Contains(err.Error(), "超过最大重试次数") {
+			t.Fatalf("Error() = %q, must not carry ekit retry-exhausted message", err.Error())
 		}
 		var pe Error
 		if !errors.As(err, &pe) {
@@ -124,9 +127,9 @@ func TestNoRetryClassification(t *testing.T) {
 		},
 		{
 			name:     "PV-11 RPC -32015",
-			fnErr:    apierror.Error{Kind: apierror.RPC, RPCCode: -32015, HasRPCCode: true, Message: "unsupported version"},
+			fnErr:    apierror.Error{Kind: apierror.RPC, RPCCode: rpcCodeUnsupportedVersion, HasRPCCode: true, Message: "unsupported version"},
 			wantKind: ErrorKindUnsupportedVersion,
-			wantRPC:  -32015,
+			wantRPC:  rpcCodeUnsupportedVersion,
 			checkRPC: true,
 		},
 		{

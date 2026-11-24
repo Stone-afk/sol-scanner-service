@@ -38,10 +38,10 @@ type publishDAO struct {
 
 // NewPublishDAO returns a PostgreSQL-backed PublishDAO.
 func NewPublishDAO(db *gorm.DB) PublishDAO {
-	return publishDAO{db: db}
+	return &publishDAO{db: db}
 }
 
-func (d publishDAO) GetPublishCursor(ctx context.Context, topic string) (uint64, bool, error) {
+func (d *publishDAO) GetPublishCursor(ctx context.Context, topic string) (uint64, bool, error) {
 	var entity PublishCursor
 	err := d.db.WithContext(ctx).Where("id = ?", 1).Take(&entity).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -56,7 +56,7 @@ func (d publishDAO) GetPublishCursor(ctx context.Context, topic string) (uint64,
 	return entity.PublishedSlot, true, nil
 }
 
-func (d publishDAO) ListBlockBatches(ctx context.Context, afterSlot uint64, limit int) ([]ScanBatch, error) {
+func (d *publishDAO) ListBlockBatches(ctx context.Context, afterSlot uint64, limit int) ([]ScanBatch, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -127,7 +127,7 @@ func groupBySlot[T any](rows []T, slotOf func(T) uint64) map[uint64][]T {
 	return out
 }
 
-func (d publishDAO) AdvancePublishCursor(ctx context.Context, topic string, slot uint64) error {
+func (d *publishDAO) AdvancePublishCursor(ctx context.Context, topic string, slot uint64) error {
 	now := time.Now().Unix()
 	err := d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var entity PublishCursor

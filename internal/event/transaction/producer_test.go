@@ -342,3 +342,49 @@ func TestPublishBackoffSequenceAndCancel(t *testing.T) {
 		t.Fatalf("cursor must not advance while failing: ok=%v advances=%v", ok, advances)
 	}
 }
+
+func TestPublishBackoffSequenceAndReset(t *testing.T) {
+	// AC-S05 — capped exponential backoff, reset to 1s after a success.
+	t.Parallel()
+	tx := func(slot uint64, sig string) domain.Transaction {
+		return domain.Transaction{Slot: slot, TxIndex: 0, Signature: sig, Status: domain.TxStatusSuccess, Version: domain.TxVersion0, Fee: 1, FeePayer: "P"}
+	}
+	repo := &fakePublishRepo{batches: []domain.BlockBatch{
+		{Block: domain.Block{Slot: 500, Blockhash: "Hash500"}, Transactions: []domain.Transaction{tx(500, "Sig500")}},
+		{Block: domain.Block{Slot: 501, Blockhash: "Hash501"}, Transactions: []domain.Transaction{tx(501, "Sig501")}},
+	}}
+	fail := errors.New("kafka down")
+	// slot 500: 7 failures then success; slot 501: 1 failure then success.
+	fake := &fakeMQX{errs: []error{fail, fail, fail, fail, fail, fail, fail, nil, fail, nil}}
+	prod := NewProducerFromMQX(fake, testPublishTopic, repo, testChain, slog.Default())
+
+	var backoffs []time.Duration
+	prod.wait = func(_ context.Context, d time.Duration) error {
+		if d == publishIdleWait {
+			return context.Canceled // drained: stop at the first idle poll
+		}
+		backoffs = append(backoffs, d)
+		return nil
+	}
+
+	if err := prod.Run(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run err=%v want context.Canceled from idle wait", err)
+	}
+	want := []time.Duration{
+		time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
+		30 * time.Second, 30 * time.Second,
+		time.Second,
+	}
+	if len(backoffs) != len(want) {
+		t.Fatalf("backoff waits=%v want %v", backoffs, want)
+	}
+	for i := range want {
+		if backoffs[i] != want[i] {
+			t.Fatalf("backoff waits=%v want %v", backoffs, want)
+		}
+	}
+	_, _, advances, _ := repo.snapshot()
+	if len(advances) != 2 || advances[0] != 500 || advances[1] != 501 {
+		t.Fatalf("advances=%v want [500 501]", advances)
+	}
+}

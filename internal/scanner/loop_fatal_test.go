@@ -283,6 +283,42 @@ func TestRunFatalControlProviderRetries(t *testing.T) {
 	}
 }
 
+func TestRunRetryWaitsPollInterval(t *testing.T) {
+	// AC-S07 — retriable Step failures wait exactly pollInterval each time.
+	t.Parallel()
+
+	reader := newHandoffReader(102)
+	reader.slots[[2]uint64{101, 102}] = []uint64{101}
+	reader.setBlock(101, minimalBlock(101))
+	cursor := newFakeCursor(100, true)
+	s := New(reader, &fakeProducer{err: errors.New("kafka down")}, cursor, &fakeHaltChecker{}, Config{
+		Chain:          "solana-mainnet",
+		GenesisHash:    "genesis-a",
+		PollInterval:   77 * time.Millisecond,
+		StepSlots:      2,
+		SlotsPerWorker: 2,
+	}, slog.Default())
+
+	var waits []time.Duration
+	s.wait = func(_ context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		if len(waits) == 2 {
+			return context.Canceled
+		}
+		return nil
+	}
+
+	if err := s.Run(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled from second wait", err)
+	}
+	if len(waits) != 2 || waits[0] != 77*time.Millisecond || waits[1] != 77*time.Millisecond {
+		t.Fatalf("waits = %v, want [77ms 77ms]", waits)
+	}
+	if slot, ok := cursor.handedSlot(); !ok || slot != 100 {
+		t.Fatalf("handed_slot = %d ok=%v, want unchanged 100", slot, ok)
+	}
+}
+
 // countingHaltProbe satisfies HaltChecker and records accidental CreateHalt use.
 type countingHaltProbe struct {
 	unresolved      bool

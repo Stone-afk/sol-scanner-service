@@ -31,6 +31,7 @@ import (
 	"github.com/Stone-afk/sol-scanner-service/internal/test/jsonparsed"
 	"github.com/Stone-afk/sol-scanner-service/internal/test/lagcheck"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 	"gorm.io/gorm"
 )
 
@@ -602,7 +603,7 @@ func (h *liveHarness) fetchJSONParsedBlock(t *testing.T, slot uint64) jsonparsed
 			map[string]any{
 				"encoding":                       "jsonParsed",
 				"commitment":                     "finalized",
-				"maxSupportedTransactionVersion": 1,
+				"maxSupportedTransactionVersion": rpc.MaxSupportedTransactionVersion1,
 				"transactionDetails":             "full",
 				"rewards":                        false,
 			},

@@ -7,6 +7,7 @@ require (
 	github.com/confluentinc/confluent-kafka-go/v2 v2.11.0
 	github.com/ecodeclub/ekit v0.0.10
 	github.com/solana-foundation/solana-go/v2 v2.3.0
+	golang.org/x/sync v0.23.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.25.10
@@ -41,7 +42,6 @@ require (
 	go.uber.org/ratelimit v0.3.1 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect

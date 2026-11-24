@@ -109,13 +109,19 @@ func ParseBlock(slot uint64, blk *rpc.GetBlockResult) (domain.BlockBatch, error)
 	return batch, nil
 }
 
+// 交易消息版本。SDK 只导出 legacy。
+const (
+	txVersionV0 rpc.TransactionVersion = 0
+	txVersionV1 rpc.TransactionVersion = 1
+)
+
 func mapTxVersion(v rpc.TransactionVersion) (domain.TxVersion, error) {
 	switch v {
 	case rpc.LegacyTransactionVersion:
 		return domain.TxVersionLegacy, nil
-	case 0:
+	case txVersionV0:
 		return domain.TxVersion0, nil
-	case 1:
+	case txVersionV1:
 		return domain.TxVersion1, nil
 	default:
 		return 0, fmt.Errorf("unsupported transaction version %d", v)

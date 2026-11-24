@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Stone-afk/chain-api-go/apierror"
+	"github.com/ecodeclub/ekit/retry"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
@@ -66,8 +67,7 @@ func classify(err error) ErrorKind {
 	if errors.Is(err, rpc.ErrNotConfirmed) {
 		return ErrorKindRPC
 	}
-	var ae apierror.Error
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[apierror.Error](err); ok {
 		switch ae.Kind {
 		case apierror.Transport:
 			return ErrorKindTransient
@@ -94,8 +94,7 @@ func wrapError(op string, err error) Error {
 		Kind:      classify(err),
 		cause:     err,
 	}
-	var ae apierror.Error
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[apierror.Error](err); ok {
 		out.HTTPStatus = ae.HTTPStatus
 		if ae.HasRPCCode {
 			out.RPCCode = ae.RPCCode
@@ -111,24 +110,26 @@ func do(
 	sleep func(context.Context, time.Duration) error,
 	fn func(context.Context) error,
 ) error {
-	const maxAttempts = 3
-	waits := []time.Duration{250 * time.Millisecond, time.Second}
-	var last error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	strategy, strategyErr := retry.NewExponentialBackoffRetryStrategy(250*time.Millisecond, time.Second, 2)
+	if strategyErr != nil {
+		return wrapError(op, strategyErr)
+	}
+	for {
 		callCtx, cancel := context.WithTimeout(ctx, timeout)
 		err := fn(callCtx)
 		cancel()
 		if err == nil {
 			return nil
 		}
-		last = err
-		kind := classify(err)
-		if kind != ErrorKindTransient || attempt == maxAttempts-1 {
+		if classify(err) != ErrorKindTransient {
 			return wrapError(op, err)
 		}
-		if sleepErr := sleep(ctx, waits[attempt]); sleepErr != nil {
+		d, ok := strategy.Next()
+		if !ok {
+			return wrapError(op, err)
+		}
+		if sleepErr := sleep(ctx, d); sleepErr != nil {
 			return wrapError(op, sleepErr)
 		}
 	}
-	return wrapError(op, last)
 }

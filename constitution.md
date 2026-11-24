@@ -1,6 +1,6 @@
 # sol-scanner-service 项目开发宪法
 
-Version: 1.1.0 · Ratified: 2026-11-21 · Last amended: 2026-11-22
+Version: 1.2.0 · Ratified: 2026-11-21 · Last amended: 2026-11-24
 
 本文件约束本仓库的架构判断、实现取舍与质量底线。`AGENTS.md` 是项目上下文入口；非简单任务开始前应主动读取本文、已批准规格（`docs/superpowers/001-sol-scanner-v1/`）和相关源码。本文高于普通协作建议，但不高于系统/平台规则，也不高于用户在当前任务中的明确指令。
 
@@ -105,11 +105,11 @@ Version: 1.1.0 · Ratified: 2026-11-21 · Last amended: 2026-11-22
 
 ## 第八条：语义常量原则 (Semantic Constants)
 
-核心：有限集合的业务语义必须由其 owner 包定义类型化常量，避免裸字面量扩散。
+核心：有限集合的业务语义必须由其 owner 包定义类型化常量；链上指令判别符、固定线格式宽度，以及生产代码里用来分支的协议码，同样必须是所属包的命名常量。避免裸字面量扩散。
 
 - **8.1** 交易状态、程序、指令 kind、停扫 reason、消息 status/program/kind 等有限集合使用命名类型与 typed constants；每个常量附清晰中文注释，同文不同义必须分类型。
 - **8.2** 跨层链数据语义优先归 `internal/domain`；DAO 专属语义归 `internal/repository/postgre`；迁移方向归 `internal/pkg/postgre`；迁移命令 action 归 `cmd/migrate`；Kafka 消息 wire 字符串归 `internal/event`。禁止新增全局 constants/consts 包。
-- **8.3** RPC 协议值、SQL 标识/SQLSTATE/constraint、配置键、日志与错误文案不因形式相似而常量化；历史 migration 内容不修改。协议 raw 值和用于验证非法输入的 sentinel 可以保留裸字面量。
+- **8.3** 链上指令判别符、固定线格式宽度（u8、u32、u64、公钥长度）以及生产代码里用来分支的协议码（交易版本、节点错误码）必须在所属包定义为命名常量；同一组一行中文注释即可，不要求每个宽度再写一行。构造受支持输入的测试复用这些常量。第三方 SDK 已导出的常量优先复用，不在本仓库再抄一份。账户列表下标、SQL 标识、SQLSTATE、constraint、配置键、日志与错误文案、超时与轮询间隔、HTTP 状态码、历史 migration 不因形式相似而常量化。用于验证非法输入的 sentinel 可以保留裸字面量。
 - **8.4** 常量重构不得扩大测试边界：普通测试继续离线，真实 PostgreSQL/Kafka/主网只在 e2e；支持值应复用生产常量，非法 sentinel 可直接使用裸字面量。
 - **8.5** 命名常量类型应按实际底层类型提供明确的边界转换方法：`string` 使用 `ToString()`，`int16`/`int`/`int64` 等使用对应 `ToInt16()`/`ToInt()`/`ToInt64()`。同类型内部比较或 `switch` 无需转换；只有进入基础类型字段、ORM、序列化、日志等边界时才转换。
 

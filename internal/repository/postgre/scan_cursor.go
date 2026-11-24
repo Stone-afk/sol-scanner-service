@@ -25,10 +25,10 @@ type scanCursorDAO struct {
 
 // NewScanCursorDAO returns a PostgreSQL-backed ScanCursorDAO.
 func NewScanCursorDAO(db *gorm.DB) ScanCursorDAO {
-	return scanCursorDAO{db: db}
+	return &scanCursorDAO{db: db}
 }
 
-func (d scanCursorDAO) GetHandedSlot(ctx context.Context) (uint64, bool, error) {
+func (d *scanCursorDAO) GetHandedSlot(ctx context.Context) (uint64, bool, error) {
 	var entity ScanCursor
 	err := d.db.WithContext(ctx).Where("id = ?", 1).Take(&entity).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -40,7 +40,7 @@ func (d scanCursorDAO) GetHandedSlot(ctx context.Context) (uint64, bool, error) 
 	return entity.HandedSlot, true, nil
 }
 
-func (d scanCursorDAO) AdvanceHandedSlot(ctx context.Context, prev, next uint64) error {
+func (d *scanCursorDAO) AdvanceHandedSlot(ctx context.Context, prev, next uint64) error {
 	now := time.Now().Unix()
 	err := d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Exec(
@@ -75,7 +75,7 @@ func (d scanCursorDAO) AdvanceHandedSlot(ctx context.Context, prev, next uint64)
 	return nil
 }
 
-func (d scanCursorDAO) RewindHandedSlot(ctx context.Context, slot uint64) error {
+func (d *scanCursorDAO) RewindHandedSlot(ctx context.Context, slot uint64) error {
 	now := time.Now().Unix()
 	result := d.db.WithContext(ctx).Exec(
 		`INSERT INTO sol_scan_cursor (id, handed_slot, updated_at) VALUES (1, ?, ?)

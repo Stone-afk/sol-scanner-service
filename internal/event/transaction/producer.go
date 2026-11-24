@@ -10,6 +10,7 @@ import (
 	"github.com/Stone-afk/sol-scanner-service/internal/pkg/mqx"
 	"github.com/Stone-afk/sol-scanner-service/internal/repository"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/ecodeclub/ekit/retry"
 )
 
 const (
@@ -71,7 +72,10 @@ func NewProducerFromMQX(
 // Run publishes one committed block at a time until ctx is canceled.
 // published_slot advances only after ProduceBatch fully acks (or for empty-tx blocks).
 func (p *Producer) Run(ctx context.Context) error {
-	backoff := publishBackoffStart
+	backoff, err := newPublishBackoff()
+	if err != nil {
+		return err
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -95,14 +99,21 @@ func (p *Producer) Run(ctx context.Context) error {
 
 		batch := batches[0]
 		if err := p.publishBlock(ctx, batch); err != nil {
-			if waitErr := p.wait(ctx, backoff); waitErr != nil {
+			d, _ := backoff.Next()
+			if waitErr := p.wait(ctx, d); waitErr != nil {
 				return waitErr
 			}
-			backoff = nextBackoff(backoff)
 			continue
 		}
-		backoff = publishBackoffStart
+		if backoff, err = newPublishBackoff(); err != nil {
+			return err
+		}
 	}
+}
+
+// newPublishBackoff retries forever: 1s doubling, capped at 30s.
+func newPublishBackoff() (*retry.ExponentialBackoffRetryStrategy, error) {
+	return retry.NewExponentialBackoffRetryStrategy(publishBackoffStart, publishBackoffMax, 0)
 }
 
 func (p *Producer) afterSlot(ctx context.Context) (uint64, error) {
@@ -131,14 +142,6 @@ func (p *Producer) publishBlock(ctx context.Context, batch domain.BlockBatch) er
 		}
 	}
 	return p.repo.AdvancePublishCursor(ctx, p.topic, batch.Block.Slot)
-}
-
-func nextBackoff(current time.Duration) time.Duration {
-	next := current * 2
-	if next > publishBackoffMax || next < current {
-		return publishBackoffMax
-	}
-	return next
 }
 
 // Close closes the underlying mqx producer.

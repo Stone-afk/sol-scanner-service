@@ -27,10 +27,10 @@ type publishRepository struct {
 
 // NewPublishRepository returns a domain-facing PublishRepository over a PublishDAO.
 func NewPublishRepository(dao postgre.PublishDAO) PublishRepository {
-	return publishRepository{dao: dao}
+	return &publishRepository{dao: dao}
 }
 
-func (r publishRepository) GetPublishCursor(ctx context.Context, topic string) (uint64, bool, error) {
+func (r *publishRepository) GetPublishCursor(ctx context.Context, topic string) (uint64, bool, error) {
 	slot, ok, err := r.dao.GetPublishCursor(ctx, topic)
 	if errors.Is(err, postgre.ErrPublishTopicMismatch) {
 		return 0, false, ErrPublishTopicMismatch
@@ -38,7 +38,7 @@ func (r publishRepository) GetPublishCursor(ctx context.Context, topic string) (
 	return slot, ok, err
 }
 
-func (r publishRepository) ListBlockBatches(ctx context.Context, afterSlot uint64, limit int) ([]domain.BlockBatch, error) {
+func (r *publishRepository) ListBlockBatches(ctx context.Context, afterSlot uint64, limit int) ([]domain.BlockBatch, error) {
 	entities, err := r.dao.ListBlockBatches(ctx, afterSlot, limit)
 	if err != nil {
 		return nil, err
@@ -50,7 +50,7 @@ func (r publishRepository) ListBlockBatches(ctx context.Context, afterSlot uint6
 	return out, nil
 }
 
-func (r publishRepository) AdvancePublishCursor(ctx context.Context, topic string, slot uint64) error {
+func (r *publishRepository) AdvancePublishCursor(ctx context.Context, topic string, slot uint64) error {
 	err := r.dao.AdvancePublishCursor(ctx, topic, slot)
 	if errors.Is(err, postgre.ErrPublishTopicMismatch) {
 		return ErrPublishTopicMismatch

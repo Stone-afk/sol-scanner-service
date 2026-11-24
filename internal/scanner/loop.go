@@ -12,6 +12,8 @@ import (
 	"github.com/Stone-afk/sol-scanner-service/internal/pkg/ctxwait"
 	"github.com/Stone-afk/sol-scanner-service/internal/repository"
 	"github.com/Stone-afk/sol-scanner-service/internal/scanner/provider"
+	"github.com/ecodeclub/ekit/retry"
+	"golang.org/x/sync/errgroup"
 )
 
 // errCaughtUp means next slot is past finalized; Run should poll-wait.
@@ -81,6 +83,10 @@ func New(
 // UNSUPPORTED_VERSION, handed-slot conflict, and cursor/halt DB errors.
 // Retriable (log, wait pollInterval): other provider failures and Produce failures.
 func (s *Scanner) Run(ctx context.Context) error {
+	retryWait, err := retry.NewFixedIntervalRetryStrategy(s.cfg.PollInterval, 0)
+	if err != nil {
+		return err
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -114,7 +120,8 @@ func (s *Scanner) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 		s.logger.Error("handoff step failed", "err", err)
-		if waitErr := s.wait(ctx, s.cfg.PollInterval); waitErr != nil {
+		d, _ := retryWait.Next()
+		if waitErr := s.wait(ctx, d); waitErr != nil {
 			return waitErr
 		}
 	}
@@ -147,30 +154,13 @@ func (s *Scanner) Step(ctx context.Context) error {
 	if err != nil {
 		return wrapCursorErr(err)
 	}
-	var next uint64
-	var prev uint64
-	if hasCursor {
-		next = handed + 1
-		prev = handed
-	} else {
-		next = s.cfg.StartSlot
-		prev = s.cfg.StartSlot - 1
-	}
-
 	finalized, err := s.reader.FinalizedSlot(ctx)
 	if err != nil {
 		return err
 	}
-	if next > finalized {
+	prev, next, right, ok := handoffWindow(handed, hasCursor, s.cfg.StartSlot, s.cfg.StepSlots, finalized)
+	if !ok {
 		return errCaughtUp
-	}
-
-	right := next + s.cfg.StepSlots - 1
-	if right < next { // overflow
-		right = finalized
-	}
-	if right > finalized {
-		right = finalized
 	}
 
 	segs := Segments(next, right, s.cfg.SlotsPerWorker)
@@ -187,34 +177,41 @@ func (s *Scanner) Step(ctx context.Context) error {
 	return nil
 }
 
+// handoffWindow: ok=false means caught up; right clamps to finalized on overflow.
+func handoffWindow(handed uint64, hasCursor bool, start, step, finalized uint64) (prev, next, right uint64, ok bool) {
+	if hasCursor {
+		prev, next = handed, handed+1
+	} else {
+		prev, next = start-1, start
+	}
+	if next > finalized {
+		return 0, 0, 0, false
+	}
+	right = next + step - 1
+	if right < next || right > finalized {
+		right = finalized
+	}
+	return prev, next, right, true
+}
+
+// runWorkers cancels siblings on the first failure; an unsupported error wins
+// over any earlier error because it is Run-fatal.
 func (s *Scanner) runWorkers(ctx context.Context, segs [][2]uint64) error {
-	workerCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	errCh := make(chan error, len(segs))
-	var wg sync.WaitGroup
+	g, workerCtx := errgroup.WithContext(ctx)
+	var once sync.Once
+	var unsupported error
 	for _, seg := range segs {
-		seg := seg
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := s.runSegment(workerCtx, seg[0], seg[1]); err != nil {
-				cancel() // cancel siblings in this step
-				errCh <- err
+		g.Go(func() error {
+			err := s.runSegment(workerCtx, seg[0], seg[1])
+			if isUnsupported(err) {
+				once.Do(func() { unsupported = err })
 			}
-		}()
-	}
-	wg.Wait()
-	close(errCh)
-
-	var first error
-	for err := range errCh {
-		if first == nil {
-			first = err
-		}
-		if isUnsupported(err) {
 			return err
-		}
+		})
 	}
-	return first
+	err := g.Wait()
+	if unsupported != nil {
+		return unsupported
+	}
+	return err
 }

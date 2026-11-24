@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -157,7 +158,7 @@ func TestReaderWireContracts(t *testing.T) {
 			name:       "PV-05 Block",
 			reply:      testBlockJSON,
 			wantMethod: "getBlock",
-			wantParams: `[7,{"commitment":"finalized","encoding":"base64","maxSupportedTransactionVersion":1,"rewards":false,"transactionDetails":"full"}]`,
+			wantParams: fmt.Sprintf(`[7,{"commitment":"finalized","encoding":"base64","maxSupportedTransactionVersion":%d,"rewards":false,"transactionDetails":"full"}]`, rpc.MaxSupportedTransactionVersion1),
 			call: func(ctx context.Context, r Reader) error {
 				got, err := r.Block(ctx, 7)
 				if err != nil {

@@ -414,6 +414,51 @@ func TestStepUnsupportedVersionFatalNoAdvance(t *testing.T) {
 	}
 }
 
+// lateUnsupportedReader fails slot 101 at once and fails slot 102 with
+// unsupported only after the step context is cancelled by that first failure.
+type lateUnsupportedReader struct {
+	*handoffReader
+}
+
+func (r lateUnsupportedReader) Block(ctx context.Context, slot uint64) (*rpc.GetBlockResult, error) {
+	if slot == 101 {
+		return nil, provider.Error{Operation: "getBlock", Kind: provider.ErrorKindTransient}
+	}
+	select {
+	case <-ctx.Done():
+		return nil, provider.Error{Operation: "getBlock", Kind: provider.ErrorKindUnsupportedVersion}
+	case <-time.After(time.Second):
+		// sibling cancellation never arrived: retriable error makes the test fail
+		return nil, provider.Error{Operation: "getBlock", Kind: provider.ErrorKindTransient}
+	}
+}
+
+func TestStepUnsupportedWinsOverEarlierError(t *testing.T) {
+	// AC-S02 / INV-S02
+	t.Parallel()
+
+	reader := newHandoffReader(102)
+	reader.slots[[2]uint64{101, 101}] = []uint64{101}
+	reader.slots[[2]uint64{102, 102}] = []uint64{102}
+
+	cursor := newFakeCursor(100, true)
+	s := newTestHandoff(t, lateUnsupportedReader{reader}, &fakeProducer{}, cursor, Config{
+		Chain:          "solana-mainnet",
+		GenesisHash:    "genesis-a",
+		PollInterval:   time.Second,
+		StepSlots:      2,
+		SlotsPerWorker: 1,
+	})
+
+	err := s.Step(context.Background())
+	if !isFatalStep(err) {
+		t.Fatalf("Step error = %v, want fatal unsupported", err)
+	}
+	if cursor.advanceCount() != 0 {
+		t.Fatalf("AdvanceHandedSlot calls = %d, want 0", cursor.advanceCount())
+	}
+}
+
 func TestHandoffProductionCodeImports(t *testing.T) {
 	// AC-094 scanner half
 	t.Parallel()

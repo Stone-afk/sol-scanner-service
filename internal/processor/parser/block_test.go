@@ -185,9 +185,9 @@ func TestParseBlockP08AccountKeys(t *testing.T) {
 		switch twm.Version {
 		case rpc.LegacyTransactionVersion:
 			sawLegacy = true
-		case 0:
+		case txVersionV0:
 			sawV0 = true
-		case 1:
+		case txVersionV1:
 			sawV1 = true
 		}
 	}
